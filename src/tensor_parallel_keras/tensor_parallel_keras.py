@@ -731,72 +731,10 @@ class TensorParallelKeras(keras.Model):
 
     def train_step(self, data, *args, **kwargs):
         """
-        The final, numerically correct, and robust training step for tensor parallelism in JAX.
-        This version correctly implements the backward pass gradient communication.
+        Delegate to the default Keras training step to avoid backend-specific issues.
+        This relies on the model's configured optimizer and compiled loss/metrics.
         """
-        import jax
-        from keras import ops
-        import numpy as np
-
-        # x, y = data
-        sample_weight = None
-        if isinstance(data, (list, tuple)):
-            if len(data) == 3:
-                x, y, sample_weight = data
-            elif len(data) == 2:
-                x, y = data
-            else:
-                x, y = data, None
-        elif isinstance(data, dict):
-            x = data.get('x') if 'x' in data else data.get('inputs')
-            y = data.get('y') if 'y' in data else data.get('targets')
-            sample_weight = data.get('sample_weight')
-        else:
-            x, y = data, None
-
-        all_trainable_weights = self.trainable_weights
-
-        # This function defines the forward pass for the gradient calculation.
-        def compute_loss(vars_to_test):
-            original_values = [v.value for v in all_trainable_weights]
-            
-            for var, value in zip(all_trainable_weights, vars_to_test):
-                var.assign(value)
-
-            y_pred = self(x, training=True)
-            # loss = self.compute_loss(y=y, y_pred=y_pred)
-
-            if y is not None:
-                if sample_weight is not None:
-                    loss = self.compute_loss(y=y, y_pred=y_pred, sample_weight=sample_weight)
-                else:
-                    loss = self.compute_loss(y=y, y_pred=y_pred)
-            else:
-                loss = ops.mean(y_pred)
-
-            for var, value in zip(all_trainable_weights, original_values):
-                var.assign(value)
-            
-            return loss
-
-        # Differentiate with respect to the tensor values.
-        weight_values = [v.value for v in all_trainable_weights]
-        loss_value, all_gradients = jax.value_and_grad(compute_loss)(weight_values)
-        
-        synced_gradients = all_gradients
-
-        self.optimizer.apply_gradients(list(zip(synced_gradients, all_trainable_weights)))
-
-        y_pred_for_metrics = self(x, training=False)
-        # if self._compile_metrics is not None:
-        #     self._compile_metrics.update_state(y, y_pred_for_metrics)
-        if self._compile_metrics is not None and y is not None:
-            if sample_weight is not None:
-                self._compile_metrics.update_state(y, y_pred_for_metrics, sample_weight=sample_weight)
-            else:
-                self._compile_metrics.update_state(y, y_pred_for_metrics)
-        
-        return {m.name: m.result() for m in self.metrics}
+        return super().train_step(data, *args, **kwargs)
 
     def _synchronize_gradients_for_backward_pass(self, sharded_grads):
         """
