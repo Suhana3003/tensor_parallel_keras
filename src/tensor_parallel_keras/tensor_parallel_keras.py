@@ -733,36 +733,10 @@ class TensorParallelKeras(keras.Model):
         weight_values = [v.value for v in all_trainable_weights]
         loss_value, all_gradients = jax.value_and_grad(compute_loss)(weight_values)
         
-        # --- THIS IS THE FINAL FIX: CORRECT GRADIENT COMMUNICATION ---
-        # `all_gradients` contains a flat list of partial gradients for each shard.
-        # We must now sum the gradients for the column-parallel weights.
-        
-        num_vars_per_shard = len(all_trainable_weights) // self.world_size
-        synced_gradients = list(all_gradients) # Create a mutable copy
+                # Use gradients as-is; do not aggregate in this single-process path.
+        synced_gradients = all_gradients
 
-        # Iterate through the variables corresponding to a single shard's structure.
-        for i in range(num_vars_per_shard):
-            var = all_trainable_weights[i]
-            var_name = var.path
-            is_column_parallel = False
-
-            # Check the config to see if this variable is column-parallel sharded.
-            for pattern, action in self.tensor_parallel_config.state_rules.items():
-                clean_pattern = pattern.replace('\\.', '.').strip('$^')
-                if hasattr(action, 'sharding_type') and action.sharding_type == "column" and clean_pattern in var_name:
-                    is_column_parallel = True
-                    break
-            
-            if is_column_parallel:
-                grad_sum = all_gradients[i]
-                for shard_idx in range(1, self.world_size):
-                    grad_to_add = all_gradients[i + shard_idx * num_vars_per_shard]
-                    grad_sum += grad_to_add
-                
-                for shard_idx in range(self.world_size):
-                    synced_gradients[i + shard_idx * num_vars_per_shard] = grad_sum
-
-        self.optimizer.apply_gradients(zip(all_trainable_weights, synced_gradients))
+        self.optimizer.apply_gradients(list(zip(synced_gradients, all_trainable_weights)))
 
         y_pred_for_metrics = self(x, training=False)
         if self._compile_metrics is not None:
