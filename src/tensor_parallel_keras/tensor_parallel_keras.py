@@ -1204,13 +1204,23 @@ class TensorParallelKeras(keras.Model):
         """
         # If we have the original model compiled, use it to perform the update.
         if hasattr(self, "original_model") and hasattr(self.original_model, "train_on_batch"):
-            result = self.original_model.train_on_batch(
-                x,
-                y,
-                sample_weight=sample_weight,
-                class_weight=class_weight,
-                reset_metrics=reset_metrics,
-            )
+            # Build kwargs based on the signature supported by the backend's train_on_batch
+            try:
+                import inspect
+                sig = inspect.signature(self.original_model.train_on_batch)
+                accepted = set(sig.parameters.keys())
+            except Exception:
+                accepted = {"x", "y", "sample_weight", "class_weight"}
+            call_kwargs = {}
+            if "sample_weight" in accepted and sample_weight is not None:
+                call_kwargs["sample_weight"] = sample_weight
+            if "class_weight" in accepted and class_weight is not None:
+                call_kwargs["class_weight"] = class_weight
+            # Only pass reset_metrics if supported
+            if "reset_metrics" in accepted:
+                call_kwargs["reset_metrics"] = reset_metrics
+
+            result = self.original_model.train_on_batch(x, y, **call_kwargs)
             # Sync shards with updated original weights so forward parity remains.
             try:
                 self.set_weights(self.original_model.get_weights())
