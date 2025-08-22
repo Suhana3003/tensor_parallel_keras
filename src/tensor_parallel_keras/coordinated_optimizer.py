@@ -751,7 +751,16 @@ class TensorParallelOptimizer(optimizers.Optimizer):
         """Set optimizer weights."""
         return self.coordinated_optimizer.set_weights(weights)
     
-    def update_step(self, gradient, variable):
-        """Required method for Keras optimizer compatibility."""
-        # This will be handled by the coordinated optimizer
-        pass 
+    def update_step(self, gradient, variable, *args, **kwargs):
+        """Ensure compatibility with Keras by accepting extra args and delegating."""
+        if hasattr(self.base_optimizer, 'update_step'):
+            try:
+                return self.base_optimizer.update_step(gradient, variable, *args, **kwargs)
+            except TypeError:
+                # Fallback if base optimizer doesn't accept extra args
+                return self.base_optimizer.update_step(gradient, variable)
+        # Fallback to parent implementation
+        try:
+            return super().update_step(gradient, variable, *args, **kwargs)
+        except TypeError:
+            return super().update_step(gradient, variable) 
