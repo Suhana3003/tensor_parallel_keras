@@ -764,3 +764,29 @@ class TensorParallelOptimizer(optimizers.Optimizer):
             return super().update_step(gradient, variable, *args, **kwargs)
         except TypeError:
             return super().update_step(gradient, variable) 
+
+    def build(self, variables):
+        """Build optimizer state by delegating to the base optimizer if needed."""
+        try:
+            if hasattr(self.base_optimizer, 'build'):
+                self.base_optimizer.build(variables)
+        except Exception:
+            pass
+        try:
+            return super().build(variables)
+        except Exception:
+            return None
+    
+    def apply(self, gradients, variables, *args, **kwargs):
+        """Support Keras 3 Optimizer.apply API by delegating or converting to apply_gradients."""
+        # Prefer base optimizer's apply if available
+        if hasattr(self.base_optimizer, 'apply'):
+            try:
+                return self.base_optimizer.apply(gradients, variables, *args, **kwargs)
+            except TypeError:
+                # Fall back to pairing grads/vars and using apply_gradients
+                gv = list(zip(gradients, variables))
+                return self._apply_standard_gradients(gv)
+        # Fallback: use our apply_gradients path
+        gv = list(zip(gradients, variables))
+        return self._apply_standard_gradients(gv) 
