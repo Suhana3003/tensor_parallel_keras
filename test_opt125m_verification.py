@@ -143,7 +143,8 @@ def test_opt125m_training_verification():
     print(f"✅ {time.time() - start_time:.2f}s: Models created successfully")
     print(f"⏱️  {time.time() - start_time:.2f}s: Testing compilation...")
     try:
-        tp_model.compile(optimizer='adam', loss='categorical_crossentropy')
+        # Align TP training with original (sparse labels)
+        tp_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         print(f"✅ {time.time() - start_time:.2f}s: Models compiled successfully")
     except Exception as e:
         print(f"      ⚠️  Compilation failed: {e}")
@@ -165,7 +166,8 @@ def test_opt125m_training_verification():
         print(f"      ⚠️  Original model training failed: {e}")
     tp_history = None
     try:
-        tp_history = tp_model.fit(x_train, y_train, epochs=2, batch_size=16, verbose=0)
+        # Use sparse targets like the original model for consistency
+        tp_history = tp_model.fit(x_train, target_indices, epochs=2, batch_size=16, verbose=0)
         print(f"      ✅ TP model training completed")
     except Exception as e:
         print(f"      ⚠️  TP model training failed: {e}")
