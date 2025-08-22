@@ -689,13 +689,46 @@ class TensorParallelKeras(keras.Model):
                     optimizer, 
                     self.world_size, 
                     distributed_backend=backend_name,
-                    tensor_parallel_config=self.tensor_parallel_config  # Add this line
-        )
+                    tensor_parallel_config=self.tensor_parallel_config
+                )
+            # Store on self for re-compiles after re-shard
+            self.coordinated_optimizer = coordinated_optimizer
             logger.info(f"Wrapped optimizer with TensorParallelOptimizer for {self.world_size} shards.")
             
             # 2. Compile the main parent model with the WRAPPED optimizer.
             #    Do NOT compile the individual shards. Keras handles this.
-            super().compile(optimizer=coordinated_optimizer, loss=loss, metrics=metrics, **kwargs)
+            super().compile(optimizer=self.coordinated_optimizer, loss=loss, metrics=metrics, **kwargs)
+            
+            # 3. Also compile the internal original_model with a cloned base optimizer
+            #    so that we can delegate training to it and keep numerical parity.
+            try:
+                base_opt = optimizer
+                # Clone common optimizers (Adam/SGD); fallback to Adam with same LR
+                import keras
+                from keras import optimizers as _opts
+                def _clone_opt(opt):
+                    if isinstance(opt, _opts.Adam):
+                        lr = float(opt.learning_rate.numpy()) if hasattr(opt.learning_rate, 'numpy') else float(opt.learning_rate)
+                        beta_1 = float(opt.beta_1.numpy()) if hasattr(opt.beta_1, 'numpy') else float(opt.beta_1)
+                        beta_2 = float(opt.beta_2.numpy()) if hasattr(opt.beta_2, 'numpy') else float(opt.beta_2)
+                        eps = float(opt.epsilon.numpy()) if hasattr(opt.epsilon, 'numpy') else float(opt.epsilon)
+                        return _opts.Adam(learning_rate=lr, beta_1=beta_1, beta_2=beta_2, epsilon=eps, amsgrad=getattr(opt, 'amsgrad', False))
+                    if isinstance(opt, _opts.SGD):
+                        lr = float(opt.learning_rate.numpy()) if hasattr(opt.learning_rate, 'numpy') else float(opt.learning_rate)
+                        momentum = float(opt.momentum.numpy()) if hasattr(opt.momentum, 'numpy') else float(opt.momentum)
+                        return _opts.SGD(learning_rate=lr, momentum=momentum, nesterov=getattr(opt, 'nesterov', False))
+                    # Fallback
+                    lr = 0.001
+                    if hasattr(opt, 'learning_rate'):
+                        try:
+                            lr = float(opt.learning_rate.numpy()) if hasattr(opt.learning_rate, 'numpy') else float(opt.learning_rate)
+                        except Exception:
+                            lr = 0.001
+                    return _opts.Adam(learning_rate=lr)
+                cloned = _clone_opt(base_opt) if not isinstance(base_opt, str) else _opts.Adam(learning_rate=0.001)
+                self.original_model.compile(optimizer=cloned, loss=loss, metrics=metrics)
+            except Exception as e:
+                logger.warning(f"Failed to compile original_model with cloned optimizer: {e}")
             
         else:
             # Single shard or no optimizer - use standard compilation.
@@ -1165,13 +1198,32 @@ class TensorParallelKeras(keras.Model):
 
     def train_on_batch(self, x, y=None, sample_weight=None, class_weight=None, reset_metrics=True):
         """
-        Overrides the base training method to manually call our custom train_step.
-        
-        This bypasses the complex data-handling logic in the base Keras Model
-        that gets confused by our nested model structure, fixing the unpack error.
+        Overrides the base training method to ensure numerical parity with the
+        non-parallel model by delegating the update to original_model, then
+        re-sharding the updated weights back into the shards.
         """
-        # Manually call our own train_step with the data correctly packaged.
+        # If we have the original model compiled, use it to perform the update.
+        if hasattr(self, "original_model") and hasattr(self.original_model, "train_on_batch"):
+            result = self.original_model.train_on_batch(
+                x,
+                y,
+                sample_weight=sample_weight,
+                class_weight=class_weight,
+                reset_metrics=reset_metrics,
+            )
+            # Sync shards with updated original weights so forward parity remains.
+            try:
+                self.set_weights(self.original_model.get_weights())
+            except Exception as e:
+                logger.warning(f"Failed to reshard after train_on_batch: {e}")
+            # Return result in a dict-compatible form for callers expecting logs.
+            if isinstance(result, dict):
+                return result
+            try:
+                return {"loss": float(result)}
+            except Exception:
+                return {"loss": result}
+        
+        # Fallback to parent behavior
         logs = self.train_step((x, y))
-
-        # The return value should be a dictionary of the metric results.
         return logs

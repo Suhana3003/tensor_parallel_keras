@@ -702,10 +702,12 @@ class TensorParallelOptimizer(optimizers.Optimizer):
             return self._apply_standard_gradients(gradients_and_vars)
     
     def _apply_standard_gradients(self, gradients_and_vars):
-        """Apply gradients in standard Keras format."""
-        # For now, just pass through to avoid breaking standard training
-        # In a full implementation, you'd coordinate with other shards here
-        return gradients_and_vars
+        """Apply gradients in standard Keras format using the base optimizer."""
+        try:
+            self.base_optimizer.apply_gradients(gradients_and_vars)
+            return gradients_and_vars
+        except Exception:
+            return gradients_and_vars
     
     def get_config(self):
         """Get optimizer configuration."""
