@@ -87,31 +87,53 @@ class CoordinatedOptimizer:
         """
         state_dict = {}
         # Keras optimizers store state variables in a flat list. We need to group them.
-        # Variable names are often like 'Adam/m/dense_1/kernel:0'.
-        
+        # Variable paths observed (Keras Core):
+        #   - adam/sequential_dense_kernel_momentum
+        #   - adam/sequential_dense_kernel_velocity
+        #   - SGD/sequential_dense_kernel_momentum
+        #   - rmsprop/sequential_dense_kernel_velocity
+        #   - adam/iteration, adam/learning_rate
+        # We parse suffixes like _momentum, _velocity, _m, _v to infer the state group.
+
         for var in self.base_optimizer.variables:
-            name_parts = var.name.split('/')
-            
-            # Handle scalar variables like 'iterations' or the step counter 't'
-            if len(name_parts) == 1 or 'iteration' in var.name.lower():
+            raw_name = getattr(var, 'name', None)
+            raw_path = getattr(var, 'path', None)
+            identifier = (raw_path or raw_name or str(var))
+            parts = identifier.split('/')
+            tail = parts[-1]
+            tail_lower = tail.lower()
+
+            # Scalars like iteration and learning rate
+            if 'iteration' in tail_lower or tail_lower in {'iter', 't'}:
                 state_dict['t'] = var
                 continue
-
-            if len(name_parts) < 3:
-                logger.warning(f"Could not parse optimizer variable name: {var.name}")
+            if 'learning_rate' in tail_lower or tail_lower in {'lr'}:
+                state_dict['lr'] = var
                 continue
 
-            # e.g., 'm' or 'v' for Adam, 'momentum' for SGD
-            state_name = name_parts[1]
-            
-            # Reconstruct the parameter name, e.g., 'dense/kernel'
-            param_name = '/'.join(name_parts[2:]).split(':')[0]
+            state_name = None
+            param_name = None
+            if tail_lower.endswith('_momentum'):
+                state_name = 'momentum'
+                param_name = tail[: -len('_momentum')]
+            elif tail_lower.endswith('_velocity'):
+                state_name = 'velocity'
+                param_name = tail[: -len('_velocity')]
+            elif tail_lower.endswith('_m'):
+                state_name = 'm'
+                param_name = tail[: -len('_m')]
+            elif tail_lower.endswith('_v'):
+                state_name = 'v'
+                param_name = tail[: -len('_v')]
+            else:
+                # Fallback: treat entire tail as a parameter under a generic state
+                state_name = 'state'
+                param_name = tail
 
             if state_name not in state_dict:
                 state_dict[state_name] = {}
-            
             state_dict[state_name][param_name] = var
-        
+
         return state_dict
     
     def _initialize_sharded_states(self):
@@ -188,15 +210,31 @@ class CoordinatedOptimizer:
     def _partition_state_across_shards(self, state_variable):
         """Partition a single state value across shards."""
         try:
-            # Convert Keras/JAX/TF variable to a numpy array for manipulation
-            state_array = np.array(state_variable)
-            
+            # Construct a zero buffer with the same shape/dtype to avoid backend reads
+            shape = tuple(getattr(state_variable, 'shape', ()))
+            # Determine element size/dtype
+            dtype = None
+            if hasattr(state_variable, 'dtype'):
+                dt = state_variable.dtype
+                try:
+                    # TensorFlow dtype
+                    if hasattr(dt, 'as_numpy_dtype'):
+                        dtype = np.dtype(dt.as_numpy_dtype)
+                    else:
+                        dtype = np.dtype(dt)
+                except Exception:
+                    dtype = None
+            if dtype is None:
+                dtype = np.float32
+
+            state_array = np.zeros(shape, dtype=dtype)
+
             # Split along the first dimension. If it's a scalar, it will be replicated.
-            if state_array.ndim > 0:
+            if state_array.ndim > 0 and shape[0] not in (None, 0):
                 return np.array_split(state_array, self.world_size, axis=0)
             else:
-                # Replicate scalar values (like the iteration counter)
-                return [state_array] * self.world_size
+                # Replicate scalar or unknown-first-dim values
+                return [np.zeros((), dtype=dtype)] * self.world_size
                 
         except Exception as e:
             logger.warning(f"Failed to partition state '{getattr(state_variable, 'name', 'N/A')}': {e}, replicating.")
@@ -467,15 +505,54 @@ class CoordinatedOptimizer:
     def get_memory_usage(self):
         """Get memory usage information for the coordinated optimizer."""
         try:
+            # Helper to compute bytes for an optimizer variable without reading values
+            def _bytes_for_var(var) -> int:
+                try:
+                    shape = getattr(var, 'shape', ())
+                    if hasattr(shape, 'as_list'):
+                        shape = tuple(d if d is not None else 0 for d in shape.as_list())
+                    else:
+                        shape = tuple(int(d) for d in shape) if shape else ()
+                    numel = int(np.prod(shape)) if len(shape) > 0 else 1
+                    # Determine dtype size
+                    itemsize = 4
+                    if hasattr(var, 'dtype'):
+                        dt = var.dtype
+                        try:
+                            if hasattr(dt, 'as_numpy_dtype'):
+                                itemsize = np.dtype(dt.as_numpy_dtype).itemsize
+                            else:
+                                itemsize = np.dtype(dt).itemsize
+                        except Exception:
+                            itemsize = 4
+                    return numel * itemsize
+                except Exception:
+                    # Fallback estimate
+                    return 4
+
+            # Compute unsharded (full) optimizer state bytes from the base optimizer
+            unsharded_total_bytes = 0
+            if hasattr(self.base_optimizer, 'variables'):
+                for var in self.base_optimizer.variables:
+                    unsharded_total_bytes += _bytes_for_var(var)
+
             if not hasattr(self, 'sharded_states') or not self.sharded_states:
+                # No sharding active; report replicated memory across world_size
+                total_memory_bytes = unsharded_total_bytes * max(self.world_size, 1)
+                sharded_memory_bytes = total_memory_bytes
+
+                total_memory_mb = total_memory_bytes / (1024 * 1024)
                 return {
                     'sharding_enabled': False,
-                    'total_memory': '0.00 MB',
-                    'sharded_memory': '0.00 MB',
-                    'memory_savings': '0.00%'
+                    'world_size': self.world_size,
+                    'total_memory': f"{total_memory_mb:.2f} MB",
+                    'sharded_memory': f"{total_memory_mb:.2f} MB",
+                    'memory_savings': '0.00%',
+                    'total_memory_bytes': total_memory_bytes,
+                    'sharded_memory_bytes': sharded_memory_bytes
                 }
-            
-            # Calculate memory usage for sharded states
+
+            # Calculate memory usage for sharded states (sum of shard buffers)
             total_memory_bytes = 0
             sharded_memory_bytes = 0
             
@@ -520,10 +597,9 @@ class CoordinatedOptimizer:
                                 total_memory_bytes += shard_memory
                                 sharded_memory_bytes += shard_memory
             
-            # Calculate memory savings
-            if total_memory_bytes > 0:
-                # Calculate what the memory would be without sharding (replicated on each device)
-                replicated_memory_bytes = total_memory_bytes * self.world_size
+            # Calculate memory savings relative to replicated baseline
+            if unsharded_total_bytes > 0:
+                replicated_memory_bytes = unsharded_total_bytes * max(self.world_size, 1)
                 savings_bytes = replicated_memory_bytes - sharded_memory_bytes
                 savings_percentage = (savings_bytes / replicated_memory_bytes) * 100
                 
@@ -532,7 +608,8 @@ class CoordinatedOptimizer:
                 memory_savings = "0.00%"
             
             # Convert bytes to MB
-            total_memory_mb = total_memory_bytes / (1024 * 1024)
+            # Here, total_memory_bytes should reflect the cluster memory used when sharded
+            total_memory_mb = sharded_memory_bytes / (1024 * 1024)
             sharded_memory_mb = sharded_memory_bytes / (1024 * 1024)
             
             return {
@@ -541,7 +618,7 @@ class CoordinatedOptimizer:
                 'sharded_memory': f"{sharded_memory_mb:.2f} MB",
                 'memory_savings': memory_savings,
                 'world_size': self.world_size,
-                'total_memory_bytes': total_memory_bytes,
+                'total_memory_bytes': sharded_memory_bytes,
                 'sharded_memory_bytes': sharded_memory_bytes
             }
             
