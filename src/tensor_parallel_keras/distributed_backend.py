@@ -441,36 +441,15 @@ def get_distributed_backend(backend_name: str = 'auto', world_size: int = 1, ran
         return DistributedBackend(backend_name)
 
 # Convenience functions for common operations
+from . import communications_keras as _comm
+
 def allreduce_gradients(gradients: List[np.ndarray], backend: DistributedBackend, op: str = 'mean') -> List[np.ndarray]:
-    """AllReduce a list of gradients."""
-    synchronized = []
-    for grad in gradients:
-        if grad is not None:
-            synced_grad = backend.get_communication_ops()["all_reduce"](grad, op=op)
-            synchronized.append(synced_grad)
-        else:
-            synchronized.append(None)
-    return synchronized
+    return _comm.allreduce_gradients(gradients, world_size=1 if backend is None else 1)
+
 
 def allgather_outputs(outputs: List[np.ndarray], backend: DistributedBackend, axis: int = 0) -> np.ndarray:
-    """AllGather outputs from all shards."""
-    if len(outputs) == 1:
-        return outputs[0]
-        
-    # Gather the first non-None output
-    for output in outputs:
-        if output is not None:
-            return backend.get_communication_ops()["all_gather"](output)
-            
-    raise ValueError("No valid outputs to gather")
+    return _comm.allgather_outputs(outputs, world_size=len(outputs) if outputs else 1, dim=axis)
+
 
 def broadcast_parameters(parameters: List[np.ndarray], backend: DistributedBackend, root: int = 0) -> List[np.ndarray]:
-    """Broadcast parameters from root to all processes."""
-    broadcasted = []
-    for param in parameters:
-        if param is not None:
-            broadcasted_param = backend.get_communication_ops()["broadcast"](param)
-            broadcasted.append(broadcasted_param)
-        else:
-            broadcasted.append(None)
-    return broadcasted 
+    return _comm.broadcast_parameters(parameters, world_size=len(parameters) if parameters else 1, src_rank=root) 

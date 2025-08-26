@@ -83,7 +83,6 @@ class ParameterShardingStrategy:
         Returns:
             Tuple of (sharded_model, modified_parameter_names)
         """
-        print(f"🔧 Applying parameter-level sharding to {model.name}")
         
         # Store original weights for reference
         self._store_original_weights(model)
@@ -109,7 +108,6 @@ class ParameterShardingStrategy:
                     }
                     
                     modified_parameters.add(param_name)
-                    print(f"   ✅ Sharded {param_name}: {param.shape} -> {sharded_param.shape}")
         
         # Create a wrapper model that handles parameter sharding
         sharded_model = ParameterShardedModel(
@@ -187,7 +185,6 @@ class ParameterShardedModel(Model):
         if original_model.inputs:
              self.build(original_model.inputs[0].shape)
 
-        print(f"🚀 ParameterShardedModel created successfully")
 
     def _build_and_cache_weights(self):
         """
@@ -476,7 +473,6 @@ class ParameterShardedModel(Model):
     
     def _handle_embedding_layer(self, inputs, layer):
         """Handle Embedding layer with column-parallel sharding."""
-        print(f"   - Handling Embedding layer (column-parallel)")
 
         # Get sharded embeddings
         sharded_embeddings = self.sharding_strategy.sharded_weights[f"{layer.name}.embeddings"]
@@ -493,13 +489,11 @@ class ParameterShardedModel(Model):
 
     def _handle_pooling_layer(self, inputs, layer):
         """Handle pooling layer."""
-        print(f"   - Handling pooling layer")
         # Use original layer computation (no backend-specific ops needed)
         return layer(inputs)
 
     def _handle_einsum_dense_layer(self, inputs, layer):
         """Handle EinsumDense layer with column-parallel sharding."""
-        print(f"   - Handling EinsumDense layer (column-parallel)")
 
         # Get sharded weights for this layer only
         einsum_kernel = self.sharding_strategy.sharded_weights[f"{layer.name}.kernel"]
@@ -697,7 +691,6 @@ def apply_parameter_sharding_to_existing_model(
                     'action': action
                 }
                 
-                print(f"   ✅ Sharded {param_name}: {param.shape} -> {sharded_param.shape}")
     
     # Store the sharding strategy in the model for later use
     model._tensor_parallel_sharding = sharding_strategy

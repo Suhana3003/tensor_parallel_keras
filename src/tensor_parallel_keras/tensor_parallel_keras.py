@@ -68,10 +68,6 @@ class TensorParallelKeras(keras.Model):
         """
         super().__init__()
         
-        print("=" * 50)
-        print("Amit - TensorParallelKeras __init__ called!")
-        print("=" * 50)
-        
         # Auto-detect world_size and device_ids if not provided
         if world_size is None:
             world_size, device_ids = self._auto_detect_parallelism()
@@ -166,7 +162,6 @@ class TensorParallelKeras(keras.Model):
         self.modified_parameters_names = set()
         
         # Create model shards using parameter-level sharding
-        print(f"🔧 Creating model shards for {model.name}")
         
         # Check if this is a multi-layer model
         self._is_multi_layer_model = len(model.layers) > 2  # More than just Input + Output
@@ -229,7 +224,6 @@ class TensorParallelKeras(keras.Model):
 
         # Set the weights on the internal original_model
         self.original_model.set_weights(weights)
-        print("🔧 Weights set on original_model. Re-sharding parameters...")
 
         # Re-create collective operations
         config_with_ops = self.tensor_parallel_config.create_collective_ops(self.devices, self.distributed)
@@ -246,7 +240,6 @@ class TensorParallelKeras(keras.Model):
 
         # Safely check if the model has been compiled before trying to re-compile shards
         if hasattr(self, "optimizer") and self.optimizer is not None:
-            print("   - Re-compiling shards with new weights...")
             # Keras 3 moved compiled attributes under the optimizer
             for shard in self.model_shards:
                 shard.compile(
@@ -255,7 +248,6 @@ class TensorParallelKeras(keras.Model):
                     metrics=self.metrics
                 )
 
-        print("✅ Re-sharding complete. All shards are synchronized.")
 
 
     def _get_unpacked_weights(self, weight_collection_name):
@@ -329,20 +321,16 @@ class TensorParallelKeras(keras.Model):
             # Get available devices first
             available_devices = list_devices()
             world_size = len(available_devices)
-            print(f"🔍 Auto-detected world_size: {world_size} from {len(available_devices)} available devices")
             
             # Get best devices for the detected world_size
             device_ids = get_best_devices(world_size)
-            print(f"🔍 Auto-detected device_ids: {device_ids}")
             
             return world_size, device_ids
             
         except Exception as e:
-            print(f"⚠️  Auto-detection failed: {e}")
             # Fallback to single CPU
             world_size = 1
             device_ids = ['cpu:0']
-            print(f"   Using fallback: world_size={world_size}, device_ids={device_ids}")
             return world_size, device_ids
         
     def _adjust_device_list(self, device_ids, target_world_size):
@@ -608,7 +596,6 @@ class TensorParallelKeras(keras.Model):
                 final_output -= bias * (self.world_size - 1)
                 
                 # You can add this print statement for debugging to ensure this line is running
-                print(f"   - DEBUG: Corrected for bias added {self.world_size} times.")
 
             logger.info(f"   - Summed {len(partial_outputs)} partial outputs and corrected for replicated bias.")
             return final_output
@@ -679,23 +666,17 @@ class TensorParallelKeras(keras.Model):
         and then compiles the main model with it.
         """
         if len(self.model_shards) > 1 and optimizer is not None:
-            # 1. Create the coordinated optimizer wrapper.
-            if len(self.model_shards) > 1 and optimizer is not None:
-                # 1. Create the coordinated optimizer wrapper.
-                backend_name = getattr(self, 'distributed_backend_name', 'auto')
-                
-                # --- FIX: Pass the tensor_parallel_config into the optimizer ---
-                coordinated_optimizer = TensorParallelOptimizer(
-                    optimizer, 
-                    self.world_size, 
-                    distributed_backend=backend_name,
-                    tensor_parallel_config=self.tensor_parallel_config  # Add this line
-        )
-                self.coordinated_optimizer = coordinated_optimizer
+            backend_name = getattr(self, 'distributed_backend_name', 'auto')
+            coordinated_optimizer = TensorParallelOptimizer(
+                optimizer,
+                self.world_size,
+                distributed_backend=backend_name,
+                tensor_parallel_config=self.tensor_parallel_config
+            )
+            self.coordinated_optimizer = coordinated_optimizer
             logger.info(f"Wrapped optimizer with TensorParallelOptimizer for {self.world_size} shards.")
-            
-            # 2. Compile the main parent model with the WRAPPED optimizer.
-            #    Do NOT compile the individual shards. Keras handles this.
+
+            # Compile parent model with wrapped optimizer
             super().compile(optimizer=self.coordinated_optimizer, loss=loss, metrics=metrics, **kwargs)
             try:
                 base_opt = optimizer
@@ -723,8 +704,6 @@ class TensorParallelKeras(keras.Model):
                 self.original_model.compile(optimizer=cloned, loss=loss, metrics=metrics)
             except Exception as e:
                 logger.warning(f"Failed to compile original_model with cloned optimizer: {e}")
-
-            
         else:
             # Single shard or no optimizer - use standard compilation.
             super().compile(optimizer=optimizer, loss=loss, metrics=metrics, **kwargs)
@@ -762,7 +741,6 @@ class TensorParallelKeras(keras.Model):
         final_grads[2] = synced_grad_mlp_down
         final_grads[5] = synced_grad_mlp_down # Both optimizers get the same synced grad
 
-        print("   - DEBUG: Manually synchronized gradients for 'mlp_down.kernel'.")
         return final_grads
     
     def _apply_backward_communication(self, gradients, layer_type="unknown"):
@@ -902,18 +880,10 @@ class TensorParallelKeras(keras.Model):
     
     def fit(self, x=None, y=None, **kwargs):
         """Use standard Keras training with our corrected train_step method."""
-        print("🚀 FIT METHOD CALLED ON TENSOR PARALLEL MODEL! 🚀")
-        
         if len(self.model_shards) > 1:
-            # Enable gradient synchronization
             self._synchronize_gradients()
-            
-            # Use standard Keras training - our custom train_step will handle the rest
-            print("🚀 USING STANDARD KERAS TRAINING WITH CORRECTED TRAIN_STEP! 🚀")
             return super().fit(x, y, **kwargs)
         else:
-            # Single shard - use standard fit
-            print("🚀 USING STANDARD FIT FOR SINGLE SHARD! 🚀")
             return super().fit(x, y, **kwargs)
     
     def _update_model_parameters(self, x, y, y_pred, loss):
@@ -952,25 +922,20 @@ class TensorParallelKeras(keras.Model):
             
             # Get all available devices
             all_devices = list_devices()
-            print(f"🔍 Available devices: {all_devices}")
-            
+                
             # Update world_size based on available devices
             optimal_world_size = len(all_devices)
             if optimal_world_size != self.world_size:
-                print(f"🔄 Updating world_size from {self.world_size} to {optimal_world_size}")
                 self.world_size = optimal_world_size
             
             # Update device_ids to use best available devices
             optimal_devices = get_best_devices(self.world_size)
             if optimal_devices != self.device_ids:
-                print(f"🔄 Updating device_ids from {self.device_ids} to {optimal_devices}")
                 self.device_ids = optimal_devices
             
-            print(f"✅ Auto-detection complete: world_size={self.world_size}, devices={self.device_ids}")
             return True
             
-        except Exception as e:
-            print(f"⚠️  Auto-detection failed: {e}")
+        except Exception:
             return False
     
     def get_parallelism_info(self):

@@ -49,7 +49,6 @@ class CoordinatedOptimizer:
         # """
     def __init__(self, base_optimizer: optimizers.Optimizer, world_size: int,
                  distributed_backend: str = 'auto', rank: int = 0, shard_optimizer_states: bool = True, tensor_parallel_config=None):
-        print("✅ --- Executing NEW CoordinatedOptimizer Code --- ✅") # <-- ADD THIS LINE
 
         self.base_optimizer = base_optimizer
         self.world_size = world_size
