@@ -231,6 +231,22 @@ class TensorParallelKeras(keras.Model):
         self.original_model.set_weights(weights)
         print("🔧 Weights set on original_model. Re-sharding parameters...")
 
+        # Short-circuit for single-device or missing configuration
+        try:
+            if not hasattr(self, 'tensor_parallel_config') or self.tensor_parallel_config is None:
+                # If we're effectively single-device, skip re-sharding entirely
+                if getattr(self, 'world_size', 1) <= 1 or len(getattr(self, 'devices', [])) <= 1:
+                    print("   - Single-device or no sharding config; skipping re-sharding.")
+                    self.model_shards = [self.original_model]
+                    return
+                # Lazily create the tensor parallel config if we do have multiple devices
+                self.tensor_parallel_config = get_default_config_keras(self.original_model, self.devices)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Could not initialize tensor_parallel_config; skipping re-sharding: {e}")
+            self.model_shards = [self.original_model]
+            return
+
         # Re-create collective operations
         config_with_ops = self.tensor_parallel_config.create_collective_ops(self.devices, self.distributed)
 
