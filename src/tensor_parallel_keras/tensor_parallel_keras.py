@@ -72,8 +72,12 @@ class TensorParallelKeras(keras.Model):
         print("Amit - TensorParallelKeras __init__ called!")
         print("=" * 50)
         
+        # If device_ids were provided, respect them and derive world_size from it
+        if device_ids is not None and len(device_ids) > 0:
+            world_size = len(device_ids) if world_size is None else world_size
+        
         # Auto-detect world_size and device_ids if not provided
-        if world_size is None:
+        if world_size is None and not device_ids:
             world_size, device_ids = self._auto_detect_parallelism()
         elif device_ids is None:
             # Only auto-detect device_ids if world_size is specified
