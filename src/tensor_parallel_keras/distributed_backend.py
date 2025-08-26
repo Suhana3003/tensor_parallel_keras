@@ -15,7 +15,8 @@ class DistributedBackend:
     
     def __init__(self, backend_name: str = "auto"):
         self.backend_name = backend_name
-        self.backend = self._detect_backend()
+        # Respect explicit backend selection; fall back to detection only for 'auto'
+        self.backend = backend_name if backend_name != "auto" else self._detect_backend()
         
     def _detect_backend(self) -> str:
         """Detect the available backend."""
@@ -339,14 +340,18 @@ class DistributedBackend:
                 info["device_count"] = len(tf.config.list_physical_devices())
             elif self.backend == "pytorch":
                 import torch
-                info["devices"] = [str(d) for d in torch.device("cpu")]
-                info["device_count"] = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                if torch.cuda.is_available():
+                    info["devices"] = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+                    info["device_count"] = torch.cuda.device_count()
+                else:
+                    info["devices"] = ["cpu:0"]
+                    info["device_count"] = 1
             else:
-                info["devices"] = ["cpu"]
+                info["devices"] = ["cpu:0"]
                 info["device_count"] = 1
         except Exception as e:
             logger.warning(f"Could not get device info for {self.backend}: {e}")
-            info["devices"] = ["cpu"]
+            info["devices"] = ["cpu:0"]
             info["device_count"] = 1
         
         return info
@@ -409,6 +414,7 @@ class DistributedBackend:
             "broadcast": lambda x: x,
             "scatter": lambda x, num_devices: np.split(x, num_devices, axis=0)
         }
+
 
 def get_distributed_backend(backend_name: str = 'auto', world_size: int = 1, rank: int = 0):
     """
