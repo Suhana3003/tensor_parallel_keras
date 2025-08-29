@@ -1,24 +1,44 @@
 #!/usr/bin/env python3
 """
-Test MLP (Multi-Layer Perceptron) tensor parallelism execution
+Test MLP (Multi-Layer Perceptron) tensor parallelism execution with a PyTorch backend.
+This version is adapted for distributed execution with torchrun.
 """
 
 import os
 import numpy as np
+import torch
+import torch.distributed as dist
 
-# 💻 Simulate 2 CPU devices for JAX BEFORE importing jax
-os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=2'
-
-import jax
-print(f"🔍 JAX Device Detection:")
-print(f"   Number of JAX devices: {jax.local_device_count()}")
-print(f"   Device list: {jax.devices()}")
-print(f"   Device types: {[str(d) for d in jax.devices()]}")
-
+# Import Keras and its layers
 import keras
 from keras.layers import Input, Dense, Dropout
 from keras import Sequential
+
+# Import the TensorParallelKeras wrapper and config utility from your library
 from src.tensor_parallel_keras.tensor_parallel_keras import TensorParallelKeras
+from src.tensor_parallel_keras.distribution_lib import auto_configure_tensor_parallel
+
+# --- Distributed Setup ---
+# Initialize the process group ONLY when launched via torchrun
+if 'WORLD_SIZE' in os.environ:
+    dist.init_process_group(backend='gloo')
+
+# Get rank for logging purposes
+RANK = int(os.environ.get("RANK", 0))
+
+# --- PyTorch Device Detection ---
+if RANK == 0:
+    print("🔍 PyTorch Device Detection:")
+if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    DEVICE = 'mps'
+    torch.set_default_device(DEVICE)
+elif torch.cuda.is_available():
+    DEVICE = 'cuda'
+else:
+    DEVICE = 'cpu'
+
+if RANK == 0:
+    print(f"   - Using device: {DEVICE}")
 
 def create_mlp_model():
     """Create a simple MLP model with multiple dense layers."""
@@ -36,72 +56,76 @@ def create_mlp_model():
 
 def test_mlp_execution():
     """Test MLP tensor parallelism execution."""
-    print("Testing MLP (Multi-Layer Perceptron) tensor parallelism execution...")
+    if RANK == 0:
+        print("\nTesting MLP (Multi-Layer Perceptron) tensor parallelism execution (PyTorch)...")
     
     # Create model
     model = create_mlp_model()
-    print(f"Model created with {len(model.layers)} layers")
+    if RANK == 0:
+        print(f"Model created with {len(model.layers)} layers")
     
-    # Create tensor parallel model with JAX backend
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    if RANK == 0:
+        tp_config = auto_configure_tensor_parallel()
+        print(f"Auto-configured device IDs: {tp_config.get('devices')}")
+
+    # Create tensor parallel model with PyTorch backend
     tp_model = TensorParallelKeras(
         model=model,
-        world_size=2,
-        distributed_backend='jax'  # Use JAX backend
+        world_size=world_size,
+        distributed_backend='torch'
     )
-    print("Tensor parallel model created")
+    if RANK == 0:
+        print(f"Tensor parallel model created for world_size={world_size}")
     
     # Create test input
     input_data = np.random.random((16, 128)).astype(np.float32)
-    print(f"Input data shape: {input_data.shape}")
+    if RANK == 0:
+        print(f"Input data shape: {input_data.shape}")
     
     # Run single device model
     single_output = model(input_data)
-    print(f"Single device output shape: {single_output.shape}")
     
     # Run tensor parallel model
     tp_output = tp_model(input_data)
-    print(f"Tensor parallel output shape: {tp_output.shape}")
-    
-    # Check shapes match
-    shape_match = single_output.shape == tp_output.shape
-    print(f"Shape match: {shape_match}")
-    
-    if shape_match:
-        # Convert to numpy for comparison
-        single_np = np.array(single_output)
-        tp_np = np.array(tp_output)
+
+    # Only perform checks and logging on the main process
+    if RANK == 0:
+        print(f"Single device output shape: {single_output.shape}")
+        print(f"Tensor parallel output shape: {tp_output.shape}")
         
-        # Calculate differences
-        abs_diff = np.abs(single_np - tp_np)
-        rel_diff = abs_diff / (np.abs(single_np) + 1e-8)
+        shape_match = single_output.shape == tp_output.shape
+        print(f"Shape match: {shape_match}")
         
-        print(f"Max absolute difference: {np.max(abs_diff):.2e}")
-        print(f"Max relative difference: {np.max(rel_diff):.2e}")
-        
-        # Check if within tolerance
-        tolerance = 1e-5
-        within_tolerance = np.max(abs_diff) < tolerance
-        
-        if within_tolerance:
-            print("✅ MATHEMATICAL IDENTITY ACHIEVED! (within tolerance)")
-        else:
-            print("❌ Mathematical differences detected")
+        if shape_match:
+            # Detach tensors from the computation graph before converting
+            single_np = single_output.cpu().detach().numpy()
+            tp_np = tp_output.cpu().detach().numpy()
             
-        # Show sample values
-        print("\nSample values:")
-        print(f"  Single device: {single_np[0, :5]}")
-        print(f"  Tensor parallel: {tp_np[0, :5]}")
-        print(f"  Differences: {abs_diff[0, :5]}")
-        
-        # Show layer-by-layer sharding info
-        print("\n🔧 Layer Sharding Information:")
-        for i, layer in enumerate(model.layers):
-            if hasattr(layer, 'weights') and layer.weights:
-                for j, weight in enumerate(layer.weights):
-                    if hasattr(weight, 'shape'):
-                        print(f"  Layer {i} ({layer.name}) - Weight {j}: {weight.shape}")
-    else:
-        print("❌ Shape mismatch - execution failed")
+            abs_diff = np.abs(single_np - tp_np)
+            
+            print(f"Max absolute difference: {np.max(abs_diff):.2e}")
+            
+            tolerance = 1e-5
+            within_tolerance = np.max(abs_diff) < tolerance
+            
+            if within_tolerance:
+                print("✅ MATHEMATICAL IDENTITY ACHIEVED! (within tolerance)")
+            else:
+                print("❌ Mathematical differences detected")
+                
+            print("\nSample values:")
+            print(f"  Single device: {single_np[0, :5]}")
+            print(f"  Tensor parallel: {tp_np[0, :5]}")
+            print(f"  Differences: {abs_diff[0, :5]}")
+        else:
+            print("❌ Shape mismatch - execution failed")
 
 if __name__ == "__main__":
-    test_mlp_execution() 
+    if keras.backend.backend() != 'torch':
+        raise RuntimeError(
+            "This test requires the Keras backend to be set to 'torch'.\n"
+            "Please set the environment variable: KERAS_BACKEND=torch"
+        )
+    test_mlp_execution()

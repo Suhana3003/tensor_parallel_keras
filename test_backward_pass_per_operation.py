@@ -6,10 +6,10 @@ Similar to forward tests, but verifies that weight updates are identical
 
 import os
 # Ensure JAX backend is set before importing Keras
-os.environ["KERAS_BACKEND"] = "jax"
+os.environ["KERAS_BACKEND"] = "torch"
 
 # Simulate 2 CPU devices for JAX. This MUST be set before JAX initializes.
-os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=2'
+# os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=2'
 
 import jax
 import numpy as np

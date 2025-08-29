@@ -45,18 +45,14 @@ def _cat_tensors(tensors, dim=-1):
         return tensors[0]
 
     try:
-        # --- FIX: Convert all tensors to NumPy arrays for backend safety ---
         numpy_tensors = []
         for t in tensors:
-            # The .numpy() method is a common way to convert various tensor types
-            if hasattr(t, 'numpy'):
-                numpy_tensors.append(np.array(t))
-            # Fallback for objects that are already NumPy or need np.array()
+            if hasattr(t, 'cpu'):
+                t_cpu = t.cpu()
+                numpy_tensors.append(np.array(t_cpu))
             else:
                 numpy_tensors.append(np.array(t))
-        
-        # Now, concatenate the uniform list of NumPy arrays
-        # The 'axis' parameter in keras.ops.concatenate is equivalent to 'dim'
+    
         return keras.ops.concatenate(numpy_tensors, axis=dim)
         
     except Exception as e:

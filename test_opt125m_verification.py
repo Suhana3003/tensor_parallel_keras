@@ -16,7 +16,7 @@ from src.tensor_parallel_keras.tensor_parallel_keras import TensorParallelKeras
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=2'
+# os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=2'
 def create_simplified_opt125m_model(vocab_size=1000, hidden_size=128, num_layers=2, num_heads=4):
     """Create a simplified OPT-125M model for faster testing."""
     print("   Creating simplified OPT-125M model...")

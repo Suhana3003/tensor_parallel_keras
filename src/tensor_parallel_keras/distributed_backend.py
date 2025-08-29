@@ -48,27 +48,45 @@ class DistributedBackend:
             return np
     
     def convert_to_backend_tensor(self, tensor: Any) -> Any:
-        """Convert a tensor to the appropriate backend format."""
+        """
+        Converts a tensor to the appropriate backend format, crucially handling
+        the move from a GPU device to CPU memory before conversion if needed.
+        """
+        # --- JAX Backend ---
         if self.backend == "jax":
             import jax.numpy as jnp
-            if hasattr(tensor, 'numpy'):
+            # Must move to CPU before calling .numpy() on a GPU tensor
+            if hasattr(tensor, 'cpu'):
+                return jnp.array(tensor.cpu().numpy())
+            elif hasattr(tensor, 'numpy'):
                 return jnp.array(tensor.numpy())
             else:
                 return jnp.array(tensor)
+
+        # --- TensorFlow Backend ---
         elif self.backend == "tensorflow":
             import tensorflow as tf
-            if hasattr(tensor, 'numpy'):
+            # Must move to CPU before calling .numpy() on a GPU tensor
+            if hasattr(tensor, 'cpu'):
+                return tf.convert_to_tensor(tensor.cpu().numpy())
+            elif hasattr(tensor, 'numpy'):
                 return tf.convert_to_tensor(tensor.numpy())
             else:
                 return tf.convert_to_tensor(tensor)
-        elif self.backend == "pytorch":
-            import torch
-            if hasattr(tensor, 'numpy'):
-                return torch.tensor(tensor.numpy())
-            else:
-                return torch.tensor(tensor)
+
+        # --- PyTorch Backend ---
+        elif self.backend == 'torch':
+            if isinstance(tensor, torch.Tensor):
+                return tensor
+            # Ensure input is a numpy array before converting to a tensor
+            return torch.tensor(np.array(tensor))
+
+        # --- Fallback to NumPy ---
         else:
-            if hasattr(tensor, 'numpy'):
+            # Must move to CPU before calling .numpy() on a GPU tensor
+            if hasattr(tensor, 'cpu'):
+                return tensor.cpu().numpy()
+            elif hasattr(tensor, 'numpy'):
                 return tensor.numpy()
             else:
                 return np.array(tensor)
